@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>多資料夾批次處理工具 (智慧型)</title>
+<style>
+    body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        margin: 0;
+        padding: 0;
+        background-color: #f0f2f5;
+        color: #333;
+        line-height: 1.6;
+    }
+    .page-container {
+        width: 90%;
+        max-width: 800px;
+        margin: 30px auto;
+        padding: 20px;
+        background-color: #fff;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    h1 {
+        margin-top: 0;
+        color: #0056b3;
+        border-bottom: 2px solid #eef;
+        padding-bottom: 10px;
+    }
+    .control-panel, .status-panel {
+        margin-bottom: 25px;
+    }
+    fieldset {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 20px;
+    }
+    legend {
+        font-weight: bold;
+        color: #17a2b8;
+        padding: 0 10px;
+    }
+    .input-group {
+        margin-bottom: 15px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+    }
+    .input-group label {
+        font-weight: bold;
+        flex-shrink: 0;
+    }
+    .input-group input[type="file"],
+    .input-group input[type="number"] {
+        padding: 8px 10px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        font-size: 15px;
+    }
+    .input-group input[type="number"] {
+        width: 120px;
+    }
+    button {
+        padding: 12px 20px;
+        border: none;
+        border-radius: 6px;
+        font-size: 16px;
+        color: white;
+        background-color: #007bff;
+        cursor: pointer;
+        transition: background-color 0.2s, transform 0.1s;
+    }
+    button:hover { background-color: #0056b3; }
+    button:active { transform: scale(0.98); }
+    button:disabled {
+        background-color: #cccccc;
+        cursor: not-allowed;
+    }
+    #statusLog {
+        width: 100%;
+        min-height: 250px;
+        height: 50vh;
+        margin-top: 10px;
+        padding: 12px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        box-sizing: border-box;
+        font-family: 'Courier New', Courier, monospace;
+        white-space: pre-wrap;
+        background-color: #f8f9fa;
+        font-size: 14px;
+        overflow-y: auto;
+    }
+</style>
+</head>
+<body>
+    <div class="page-container">
+        <h1>多資料夾批次處理工具 (智慧型)</h1>
+        <p>此工具能處理一個父資料夾下的所有第一層子資料夾，並能智慧判斷檔案內容是否為真實文字，自動過濾非文字檔。</p>
+
+        <div class="control-panel">
+            <fieldset>
+                <legend>步驟 1：選擇與設定</legend>
+                <div class="input-group">
+                    <label for="folderInput">選擇父資料夾：</label>
+                    <input type="file" id="folderInput" webkitdirectory directory multiple>
+                </div>
+                 <div class="input-group">
+                    <label for="sizeLimitInput">過濾大於此大小的檔案 (KB):</label>
+                    <input type="number" id="sizeLimitInput" value="20000" min="1">
+                </div>
+                 <div class="input-group">
+                    <input type="checkbox" id="includeTreeCheckbox" checked style="width: 16px; height: 16px;">
+                    <label for="includeTreeCheckbox" style="font-weight:normal;">在每個輸出檔案開頭加入其目錄結構</label>
+                </div>
+            </fieldset>
+
+            <button id="processButton" disabled>開始處理子資料夾並下載</button>
+        </div>
+
+        <div class="status-panel">
+            <h2>處理日誌</h2>
+            <pre id="statusLog">請先選擇一個父資料夾，然後點擊上方按鈕開始處理。</pre>
+        </div>
+    </div>
+
+<script>
+    // --- DOM Element References ---
+    const folderInput = document.getElementById('folderInput');
+    const processButton = document.getElementById('processButton');
+    const statusLog = document.getElementById('statusLog');
+    const sizeLimitInput = document.getElementById('sizeLimitInput');
+    const includeTreeCheckbox = document.getElementById('includeTreeCheckbox');
+
+    // --- Global State & Constants ---
+    let allFileObjects = [];
+    const NON_TEXT_EXTENSIONS = new Set([
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.svg',
+        '.mp3', '.wav', '.ogg', '.m4a', '.flac',
+        '.mp4', '.mov', '.avi', '.wmv', '.mkv', '.flv',
+        '.zip', '.rar', '.7z', '.tar', '.gz',
+        '.exe', '.dll', '.so', '.dmg', '.app',
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+        '.db', '.sqlite', '.dat',
+        '.pyc', '.o', '.class', '.jar', '.lock'
+    ]);
+
+    // --- Event Listeners ---
+    folderInput.addEventListener('change', (event) => {
+        if (event.target.files.length > 0) {
+            allFileObjects = Array.from(event.target.files);
+            processButton.disabled = false;
+            statusLog.textContent = `已選擇資料夾，包含 ${allFileObjects.length} 個項目。\n點擊按鈕開始處理。`;
+        } else {
+            allFileObjects = [];
+            processButton.disabled = true;
+            statusLog.textContent = '資料夾選擇已取消或無效。';
+        }
+    });
+
+    processButton.addEventListener('click', processAllSubFolders);
+
+    // --- Core Logic ---
+
+    function logStatus(message) {
+        console.log(message);
+        statusLog.textContent += `\n${message}`;
+        statusLog.scrollTop = statusLog.scrollHeight; // Auto-scroll to bottom
+    }
+
+    async function processAllSubFolders() {
+        if (allFileObjects.length === 0) {
+            alert("請先選擇一個包含子資料夾的父資料夾。");
+            return;
+        }
+
+        processButton.disabled = true;
+        statusLog.textContent = '開始處理...';
+
+        const sizeLimitBytes = parseFloat(sizeLimitInput.value) * 1024;
+        if (isNaN(sizeLimitBytes) || sizeLimitBytes <= 0) {
+            alert("請輸入有效的檔案大小限制 (KB)。");
+            processButton.disabled = false;
+            return;
+        }
+
+        const projects = new Map();
+        for (const file of allFileObjects) {
+            const pathParts = file.webkitRelativePath.split('/');
+            if (pathParts.length > 1) {
+                const projectName = pathParts[1];
+                if (!projects.has(projectName)) {
+                    projects.set(projectName, []);
+                }
+                projects.get(projectName).push(file);
+            }
+        }
+
+        if (projects.size === 0) {
+            logStatus("錯誤：在選定的資料夾中未找到任何子資料夾。請確保您選擇的資料夾下有至少一個子資料夾。");
+            processButton.disabled = false;
+            return;
+        }
+
+        logStatus(`發現 ${projects.size} 個專案資料夾，將逐一處理...`);
+
+        for (const [projectName, projectFiles] of projects.entries()) {
+            logStatus(`\n--- [開始處理專案: ${projectName}] ---`);
+            
+            const fileSystemTree = new Map();
+            const prefilteredFiles = [];
+
+            // Stage 1: Pre-filter by name and size
+            for (const file of projectFiles) {
+                const relativePath = file.webkitRelativePath.split('/').slice(1).join('/');
+                if (file.size > sizeLimitBytes) {
+                    logStatus(`  - [過濾] 檔案太大: ${relativePath} (${(file.size / 1024).toFixed(2)} KB)`);
+                    continue;
+                }
+                if (!isLikelyTextFileByExtension(file.name)) {
+                     logStatus(`  - [過濾] 副檔名非文字: ${relativePath}`);
+                    continue;
+                }
+                prefilteredFiles.push(file);
+            }
+            
+            // Stage 2: Generate content and perform content-based filtering
+            let outputContent = '';
+            const processedFilesForTree = [];
+            
+            for (const file of prefilteredFiles) {
+                const relativePath = file.webkitRelativePath.split('/').slice(1).join('/');
+                try {
+                    const fileContent = await file.text();
+                    
+                    // NEW: Content-based check for binary/garbled text
+                    if (!isContentActuallyText(fileContent)) {
+                        logStatus(`  - [過濾] 內容非文字: ${relativePath}`);
+                        continue; // Skip this file
+                    }
+
+                    logStatus(`  - [選取] ${relativePath}`);
+                    processedFilesForTree.push(file); // Add to list for tree generation
+                    outputContent += `路徑/${relativePath}內容如下：\n`;
+                    outputContent += `${fileContent}\n\n`;
+
+                } catch (error) {
+                    logStatus(`  - [錯誤] 無法讀取檔案 ${relativePath}: ${error.message}`);
+                    outputContent += `路徑/${relativePath}內容如下：\n[錯誤：無法讀取檔案內容 - ${error.message}]\n\n`;
+                }
+            }
+
+            // Stage 3: Build tree from successfully processed files and prepend to content
+            processedFilesForTree.forEach(file => {
+                const projectPathParts = file.webkitRelativePath.split('/').slice(1);
+                buildTreeForNode(projectPathParts, fileSystemTree);
+            });
+
+            if (includeTreeCheckbox.checked && fileSystemTree.size > 0) {
+                let treeString = `--- [${projectName}] 目錄結構 ---\n`;
+                treeString += generateDirectoryTreeString(projectName, fileSystemTree);
+                treeString += '\n--- 檔案內容 ---\n\n';
+                outputContent = treeString + outputContent;
+            }
+            
+            // Stage 4: Trigger download
+            if(outputContent.trim() !== ""){
+                downloadAsTxt(outputContent, `${projectName}.txt`);
+                logStatus(`--- [完成處理專案: ${projectName}]，已觸發下載。 ---`);
+            } else {
+                logStatus(`--- [專案 ${projectName} 無有效文字內容可下載]，已跳過。 ---`);
+            }
+        }
+        
+        logStatus("\n所有專案資料夾處理完畢！");
+        processButton.disabled = false;
+    }
+
+    // --- Utility Functions ---
+    
+    /**
+     * NEW: Checks file content for binary characteristics (specifically the UTF-8 replacement character).
+     * @param {string} content The string content read from a file.
+     * @returns {boolean} True if the content is likely text, false otherwise.
+     */
+    function isContentActuallyText(content) {
+        if (!content) return true; // Empty files are considered text.
+        // The '�' character (U+FFFD) is inserted by decoders for invalid byte sequences.
+        // A high number of these is a strong indicator of a binary file read as text.
+        const replacementCharCount = (content.match(/\uFFFD/g) || []).length;
+
+        // Heuristic: If more than 5 replacement characters exist AND they make up
+        // more than 1% of the total content, it's almost certainly not a text file.
+        if (replacementCharCount > 5 && (replacementCharCount / content.length > 0.01)) {
+            return false;
+        }
+        return true;
+    }
+
+    function buildTreeForNode(pathParts, currentLevel) {
+        const part = pathParts[0];
+        const isFile = pathParts.length === 1;
+
+        if (isFile) {
+            if (!currentLevel.has(part)) {
+                currentLevel.set(part, { name: part, type: 'file' });
+            }
+        } else {
+            if (!currentLevel.has(part)) {
+                currentLevel.set(part, { name: part, type: 'folder', children: new Map() });
+            }
+            const nextNode = currentLevel.get(part);
+            if(nextNode.type === 'folder' && nextNode.children){
+                 buildTreeForNode(pathParts.slice(1), nextNode.children);
+            }
+        }
+    }
+
+    function isLikelyTextFileByExtension(filename) {
+        const extension = ('.' + filename.split('.').pop()).toLowerCase();
+        if (extension === '.' + filename.toLowerCase()) return true; 
+        return !NON_TEXT_EXTENSIONS.has(extension);
+    }
+    
+    function generateDirectoryTreeString(rootName, nodeMap, prefix = '') {
+        let treeString = (prefix === '') ? rootName + '\n' : '';
+        const sortedEntries = [...nodeMap.entries()].sort(([keyA, valA], [keyB, valB]) => {
+            if (valA.type === 'folder' && valB.type === 'file') return -1;
+            if (valA.type === 'file' && valB.type === 'folder') return 1;
+            return keyA.localeCompare(keyB);
+        });
+        
+        sortedEntries.forEach((entry, index) => {
+            const [name, node] = entry;
+            const isLast = index === sortedEntries.length - 1;
+            const connector = isLast ? '└── ' : '├── ';
+            const icon = node.type === 'folder' ? '📁' : '📄';
+            treeString += `${prefix}${connector}${icon} ${name}\n`;
+            if (node.type === 'folder' && node.children) {
+                const newPrefix = prefix + (isLast ? '    ' : '│   ');
+                treeString += generateDirectoryTreeString(rootName, node.children, newPrefix);
+            }
+        });
+        return treeString;
+    }
+
+    function downloadAsTxt(content, filename) {
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+    }
+
+</script>
+</body>
+</html>
